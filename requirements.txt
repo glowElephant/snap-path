@@ -1,0 +1,5 @@
+keyboard
+Pillow
+pyperclip
+pystray
+screeninfo
