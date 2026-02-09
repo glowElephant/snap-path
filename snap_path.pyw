@@ -2,41 +2,38 @@ import os
 import sys
 import ctypes
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
-from io import BytesIO
 
 import keyboard
 import pyperclip
-from PIL import ImageGrab, Image, ImageTk, ImageDraw
+from PIL import ImageGrab, Image, ImageTk
 import pystray
 import tkinter as tk
 from screeninfo import get_monitors
 
-
-# Windows DPI 인식 설정 (고해상도 모니터 대응)
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-Monitor DPI Aware
-except Exception:
+# 1. Windows DPI 인식 설정 (고해상도/멀티 모니터 필수)
+def set_dpi_awareness():
     try:
-        ctypes.windll.user32.SetProcessDPIAware()
+        ctypes.windll.shcore.SetProcessDpiAwareness(2) # Per-Monitor DPI Aware
     except Exception:
-        pass
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
+set_dpi_awareness()
 
-# 설정
 HOTKEY = "ctrl+alt+s"
 SAVE_DIR = Path.home() / "Pictures" / "SnapPath"
-
 
 def ensure_save_dir():
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
-
 def generate_filename():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return SAVE_DIR / f"screenshot_{timestamp}.png"
-
 
 def get_virtual_screen_bbox():
     """모든 모니터를 합친 가상 데스크톱 전체 영역 계산"""
@@ -47,178 +44,137 @@ def get_virtual_screen_bbox():
     max_y = max(m.y + m.height for m in monitors)
     return min_x, min_y, max_x, max_y
 
-
-def capture_full_screen():
-    """모든 모니터를 포함한 전체 화면을 즉시 캡쳐 (얼림)"""
-    return ImageGrab.grab(all_screens=True)
-
-
 class FrozenScreenSelector:
     """
     단축키를 누른 순간의 화면을 얼려서 보여주고,
-    그 위에서 영역을 선택하는 클래스 (멀티 모니터 지원)
+    그 위에서 영역을 선택하는 클래스 (Toplevel 사용)
     """
-
-    def __init__(self, frozen_screenshot):
-        self.frozen = frozen_screenshot  # 얼린 전체 스크린샷
-        self.start_x = 0
-        self.start_y = 0
-        self.end_x = 0
-        self.end_y = 0
+    def __init__(self, master_root, frozen_screenshot):
+        self.master = master_root # 메인 루트 윈도우 참조
+        self.frozen = frozen_screenshot
+        self.result_bbox = None
         self.rect = None
         self.dim_overlay = None
-        self.result_bbox = None
 
     def select(self):
-        # 가상 데스크톱 전체 영역 계산
         vx, vy, vx2, vy2 = get_virtual_screen_bbox()
-        self.vx = vx
-        self.vy = vy
-        vw = vx2 - vx
-        vh = vy2 - vy
+        vw, vh = vx2 - vx, vy2 - vy
 
-        self.root = tk.Tk()
-        self.root.overrideredirect(True)
-        self.root.attributes("-topmost", True)
-        self.root.configure(cursor="crosshair")
+        # [중요] 새로운 Tk() 대신 Toplevel() 사용
+        self.top = tk.Toplevel(self.master)
+        self.top.overrideredirect(True)
+        self.top.attributes("-topmost", True)
+        self.top.configure(cursor="crosshair")
 
         # 모든 모니터를 합친 영역으로 창 배치
-        self.root.geometry(f"{vw}x{vh}+{vx}+{vy}")
+        self.top.geometry(f"{vw}x{vh}+{vx}+{vy}")
 
-        self.canvas = tk.Canvas(
-            self.root, highlightthickness=0,
-            width=vw, height=vh
-        )
+        self.canvas = tk.Canvas(self.top, highlightthickness=0, width=vw, height=vh, bg="black")
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        # 얼린 스크린샷을 어둡게 처리해서 배경으로 표시
-        dimmed = self.frozen.copy()
-        dark_overlay = Image.new("RGBA", dimmed.size, (0, 0, 0, 120))
-        dimmed = dimmed.convert("RGBA")
-        dimmed = Image.alpha_composite(dimmed, dark_overlay)
-        dimmed = dimmed.convert("RGB")
+        # 배경 이미지 설정
+        dimmed = self.frozen.convert("RGBA")
+        overlay = Image.new("RGBA", dimmed.size, (0, 0, 0, 120))
+        dimmed = Image.alpha_composite(dimmed, overlay).convert("RGB")
 
         self.bg_dimmed = ImageTk.PhotoImage(dimmed)
-        self.bg_original = ImageTk.PhotoImage(self.frozen)
-
-        # 어두운 배경 표시
         self.canvas.create_image(0, 0, anchor=tk.NW, image=self.bg_dimmed)
 
+        # 이벤트 바인딩
         self.canvas.bind("<ButtonPress-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
-        self.root.bind("<Escape>", self._on_escape)
+        self.top.bind("<Escape>", lambda e: self.top.destroy())
 
-        self.root.mainloop()
+        # 포커스 강제 및 메인 루프 대기
+        self.top.focus_force()
+        # [중요] 메인 루프가 멈추지 않도록 wait_window 사용
+        self.master.wait_window(self.top)
+        
         return self.result_bbox
 
     def _on_press(self, event):
-        self.start_x = event.x
-        self.start_y = event.y
-        # 기존 선택 영역 제거
-        if self.rect:
-            self.canvas.delete(self.rect)
-        if self.dim_overlay:
-            self.canvas.delete(self.dim_overlay)
+        self.start_x, self.start_y = event.x, event.y
 
     def _on_drag(self, event):
-        cur_x = event.x
-        cur_y = event.y
+        # 기존 그래픽 삭제
+        if self.rect: self.canvas.delete(self.rect)
+        if self.dim_overlay: self.canvas.delete(self.dim_overlay)
 
-        # 기존 밝은 영역, 선택 사각형 제거
-        if self.rect:
-            self.canvas.delete(self.rect)
-        if self.dim_overlay:
-            self.canvas.delete(self.dim_overlay)
+        x1, y1 = min(self.start_x, event.x), min(self.start_y, event.y)
+        x2, y2 = max(self.start_x, event.x), max(self.start_y, event.y)
 
-        # 선택 영역만 원본(밝은) 이미지로 표시
-        sx = min(self.start_x, cur_x)
-        sy = min(self.start_y, cur_y)
-        ex = max(self.start_x, cur_x)
-        ey = max(self.start_y, cur_y)
-
-        # 선택 영역을 원본 밝기로 보여주기 위해 crop
-        if ex - sx > 1 and ey - sy > 1:
-            crop_region = self.frozen.crop((sx, sy, ex, ey))
-            self._bright_photo = ImageTk.PhotoImage(crop_region)
-            self.dim_overlay = self.canvas.create_image(
-                sx, sy, anchor=tk.NW, image=self._bright_photo
-            )
-
-        # 선택 영역 테두리
-        self.rect = self.canvas.create_rectangle(
-            sx, sy, ex, ey,
-            outline="#00aaff", width=2
-        )
+        # 드래그 영역 밝게 표시
+        if x2 - x1 > 0 and y2 - y1 > 0:
+            crop = self.frozen.crop((x1, y1, x2, y2))
+            self._bright_img = ImageTk.PhotoImage(crop)
+            self.dim_overlay = self.canvas.create_image(x1, y1, anchor=tk.NW, image=self._bright_img)
+        
+        self.rect = self.canvas.create_rectangle(x1, y1, x2, y2, outline="#00aaff", width=2)
 
     def _on_release(self, event):
-        end_x = event.x
-        end_y = event.y
-
-        # 너무 작은 영역은 무시
-        if abs(end_x - self.start_x) > 5 and abs(end_y - self.start_y) > 5:
-            x1 = min(self.start_x, end_x)
-            y1 = min(self.start_y, end_y)
-            x2 = max(self.start_x, end_x)
-            y2 = max(self.start_y, end_y)
+        x1, y1 = min(self.start_x, event.x), min(self.start_y, event.y)
+        x2, y2 = max(self.start_x, event.x), max(self.start_y, event.y)
+        
+        if (x2 - x1) > 5 and (y2 - y1) > 5:
             self.result_bbox = (x1, y1, x2, y2)
+        self.top.destroy()
 
-        self.root.destroy()
+def run_capture_sequence(root):
+    """메인 스레드에서 실행될 실제 캡처 로직"""
+    try:
+        # 1. 캡처 (잠시 대기 후)
+        time.sleep(0.2)
+        frozen = ImageGrab.grab(all_screens=True)
+        
+        # 2. 선택 창 띄우기 (root 전달)
+        selector = FrozenScreenSelector(root, frozen)
+        bbox = selector.select()
 
-    def _on_escape(self, event):
-        self.result_bbox = None
-        self.root.destroy()
+        # 3. 저장
+        if bbox:
+            cropped = frozen.crop(bbox)
+            ensure_save_dir()
+            filepath = generate_filename()
+            cropped.save(str(filepath))
+            pyperclip.copy(str(filepath))
+    except Exception as e:
+        print(f"Error: {e}")
 
+def on_hotkey_triggered(root):
+    """단축키 스레드 -> 메인 스레드로 작업 요청"""
+    # Tkinter의 after 메서드는 스레드 안전하게 메인 루프에 작업을 예약합니다.
+    root.after(0, run_capture_sequence, root)
 
-def on_hotkey():
-    """단축키가 눌렸을 때 실행"""
-    # 1. 누른 순간 전체 화면을 즉시 캡쳐 (얼림)
-    frozen = capture_full_screen()
-
-    # 2. 얼린 화면 위에서 영역 선택
-    selector = FrozenScreenSelector(frozen)
-    bbox = selector.select()
-
-    if bbox:
-        # 3. 얼린 스크린샷에서 선택 영역만 잘라내기
-        x1, y1, x2, y2 = bbox
-        cropped = frozen.crop((x1, y1, x2, y2))
-
-        # 4. 파일 저장
-        ensure_save_dir()
-        filepath = generate_filename()
-        cropped.save(str(filepath))
-
-        # 5. 경로 클립보드 복사
-        path_str = str(filepath)
-        pyperclip.copy(path_str)
-
-
-def create_tray_icon():
-    """시스템 트레이 아이콘 생성"""
+def setup_tray_icon(root):
+    """트레이 아이콘을 별도 스레드에서 실행"""
     icon_image = Image.new("RGB", (64, 64), color=(70, 130, 230))
-
-    def on_quit(icon, item):
+    
+    def quit_app(icon):
         icon.stop()
-        keyboard.unhook_all()
-        os._exit(0)
+        # 메인 스레드의 Tkinter 종료 예약
+        root.after(0, root.quit)
 
     menu = pystray.Menu(
-        pystray.MenuItem(f"단축키: {HOTKEY}", lambda: None, enabled=False),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("종료", on_quit),
+        pystray.MenuItem(f"SnapPath ({HOTKEY})", lambda: None, enabled=False),
+        pystray.MenuItem("종료", quit_app)
     )
-
-    icon = pystray.Icon("snap-path", icon_image, "snap-path", menu)
-    return icon
-
-
-def main():
-    keyboard.add_hotkey(HOTKEY, lambda: threading.Thread(target=on_hotkey).start())
-
-    icon = create_tray_icon()
+    icon = pystray.Icon("snap-path", icon_image, "SnapPath", menu)
     icon.run()
 
+def main():
+    # 1. 메인 스레드에서 Tkinter 루트 생성 (숨김 상태)
+    root = tk.Tk()
+    root.withdraw() # 창을 숨겨둠
+
+    # 2. 트레이 아이콘은 별도 스레드로 분리 (메인 스레드 양보)
+    threading.Thread(target=setup_tray_icon, args=(root,), daemon=True).start()
+
+    # 3. 단축키 등록 (트리거 시 root.after를 통해 메인 스레드 호출)
+    keyboard.add_hotkey(HOTKEY, lambda: on_hotkey_triggered(root))
+
+    # 4. 메인 스레드는 오직 GUI 루프만 돌림 (안정성 확보)
+    root.mainloop()
 
 if __name__ == "__main__":
     main()
