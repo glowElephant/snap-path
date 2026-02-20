@@ -12,19 +12,24 @@
 
 ## 사용법
 
-### 설치
+### exe 빌드 (권장)
+
+Python 없는 PC에서도 실행 가능한 단일 exe 파일을 생성합니다.
 
 ```bash
-pip install -r requirements.txt
+pip install pyinstaller
+pyinstaller --onefile --noconsole --name snap-path snap_path.pyw
 ```
+
+빌드 완료 후 `dist/snap-path.exe`가 생성됩니다.
 
 ### 실행
 
 ```bash
-# 콘솔 창 표시
-python snap_path.py
+# exe 실행 (Python 불필요)
+dist\snap-path.exe
 
-# 콘솔 없이 백그라운드 실행
+# 또는 Python으로 직접 실행
 pyw snap_path.pyw
 ```
 
@@ -48,11 +53,14 @@ C:\Users\{사용자}\Pictures\SnapPath\screenshot_YYYYMMDD_HHMMSS.png
 
 ## Windows 시작 프로그램 등록
 
+exe 빌드 후 아래 명령을 실행하면 시작 폴더에 바로가기가 생성됩니다.
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File create_shortcut.ps1
 ```
 
-실행하면 Windows 시작 폴더에 바로가기가 생성되어 부팅 시 자동 실행됩니다.
+- 스크립트가 자동으로 `dist/snap-path.exe` 경로를 감지합니다.
+- 부팅 시 자동 실행됩니다.
 
 해제: `Win+R` → `shell:startup` → `snap-path.lnk` 삭제
 
