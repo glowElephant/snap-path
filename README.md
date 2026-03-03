@@ -53,14 +53,7 @@ C:\Users\{사용자}\Pictures\SnapPath\screenshot_YYYYMMDD_HHMMSS.png
 
 ## Windows 시작 프로그램 등록
 
-exe 빌드 후 아래 명령을 실행하면 시작 폴더에 바로가기가 생성됩니다.
-
-```powershell
-powershell -ExecutionPolicy Bypass -File create_shortcut.ps1
-```
-
-- 스크립트가 자동으로 `dist/snap-path.exe` 경로를 감지합니다.
-- 부팅 시 자동 실행됩니다.
+[graph-RAG-study](https://github.com/glowElephant/graph-RAG-study)의 `setup.py`가 자동으로 시작 프로그램에 등록합니다.
 
 해제: `Win+R` → `shell:startup` → `snap-path.lnk` 삭제
 

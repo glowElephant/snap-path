@@ -146,17 +146,53 @@ def on_hotkey_triggered(root):
     # Tkinter의 after 메서드는 스레드 안전하게 메인 루프에 작업을 예약합니다.
     root.after(0, run_capture_sequence, root)
 
+def create_icon_image():
+    """SnapPath 트레이 아이콘 이미지 생성"""
+    from PIL import ImageDraw
+    size = 64
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # 카메라 본체 (둥근 사각형)
+    draw.rounded_rectangle([8, 18, 56, 52], radius=6, fill=(50, 120, 220), outline=(30, 80, 180), width=2)
+
+    # 카메라 상단 돌출부
+    draw.rounded_rectangle([22, 10, 42, 22], radius=3, fill=(50, 120, 220), outline=(30, 80, 180), width=2)
+
+    # 렌즈 (바깥 원)
+    draw.ellipse([22, 26, 50, 50], fill=(20, 60, 140), outline=(30, 80, 180), width=2)
+
+    # 렌즈 (안쪽 원)
+    draw.ellipse([28, 30, 44, 46], fill=(40, 100, 200), outline=(60, 140, 240), width=1)
+
+    # 렌즈 하이라이트
+    draw.ellipse([34, 33, 40, 39], fill=(140, 190, 255))
+
+    # 플래시
+    draw.ellipse([12, 22, 20, 28], fill=(255, 220, 80))
+
+    return img
+
 def setup_tray_icon(root):
     """트레이 아이콘을 별도 스레드에서 실행"""
-    icon_image = Image.new("RGB", (64, 64), color=(70, 130, 230))
-    
+    icon_image = create_icon_image()
+
     def quit_app(icon):
         icon.stop()
-        # 메인 스레드의 Tkinter 종료 예약
         root.after(0, root.quit)
+
+    def restart_app(icon):
+        icon.stop()
+        root.after(0, root.quit)
+        # 현재 스크립트를 다시 실행
+        python = sys.executable
+        script = os.path.abspath(__file__)
+        os.execv(python, [python, script])
 
     menu = pystray.Menu(
         pystray.MenuItem(f"SnapPath ({HOTKEY})", lambda: None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("재실행", restart_app),
         pystray.MenuItem("종료", quit_app)
     )
     icon = pystray.Icon("snap-path", icon_image, "SnapPath", menu)
