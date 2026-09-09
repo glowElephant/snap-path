@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 import ctypes
@@ -34,6 +35,80 @@ MOD_ALT = 0x0001
 VK_S = 0x53
 HOTKEY_ID = 1
 WM_HOTKEY = 0x0312
+
+# 클립보드 상수
+CF_UNICODETEXT = 13
+CF_DIB = 8
+GMEM_MOVEABLE = 0x0002
+
+# 64비트에서 핸들이 32비트로 잘리지 않도록 시그니처를 명시해야 한다
+_user32 = ctypes.windll.user32
+_kernel32 = ctypes.windll.kernel32
+_kernel32.GlobalAlloc.restype = ctypes.c_void_p
+_kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+_kernel32.GlobalLock.restype = ctypes.c_void_p
+_kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+_kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+_kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+_kernel32.GlobalFree.restype = ctypes.c_void_p
+_user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+_user32.SetClipboardData.restype = ctypes.c_void_p
+_user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+
+def _alloc_global(data: bytes):
+    """클립보드에 넘길 GMEM_MOVEABLE 버퍼를 만들어 데이터를 채운다."""
+    handle = _kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+    if not handle:
+        raise OSError("GlobalAlloc 실패")
+    ptr = _kernel32.GlobalLock(handle)
+    if not ptr:
+        _kernel32.GlobalFree(handle)
+        raise OSError("GlobalLock 실패")
+    ctypes.memmove(ptr, data, len(data))
+    _kernel32.GlobalUnlock(handle)
+    return handle
+
+def set_clipboard_text_and_image(text, image):
+    """경로 텍스트와 이미지를 클립보드에 함께 올린다.
+
+    붙여넣는 쪽이 지원하는 포맷을 골라간다 —
+    터미널·주소창은 경로가, 카톡·워드는 이미지가 붙는다.
+    """
+    # CF_DIB는 BMP에서 BITMAPFILEHEADER(14바이트)를 뗀 나머지
+    buffer = io.BytesIO()
+    image.convert("RGB").save(buffer, "BMP")
+    dib = buffer.getvalue()[14:]
+    encoded_text = text.encode("utf-16-le") + b"\x00\x00"
+
+    # 다른 앱이 클립보드를 쥐고 있을 수 있어 잠깐 재시도
+    for _ in range(10):
+        if _user32.OpenClipboard(None):
+            break
+        time.sleep(0.05)
+    else:
+        raise OSError("클립보드 열기 실패")
+
+    try:
+        _user32.EmptyClipboard()
+        for fmt, payload in ((CF_UNICODETEXT, encoded_text), (CF_DIB, dib)):
+            handle = _alloc_global(payload)
+            if not _user32.SetClipboardData(fmt, handle):
+                # 소유권이 넘어가지 않았으니 직접 해제
+                _kernel32.GlobalFree(handle)
+                raise OSError(f"SetClipboardData 실패 (format={fmt})")
+    finally:
+        _user32.CloseClipboard()
+
+def copy_capture_to_clipboard(filepath, image):
+    """복합 포맷 복사를 시도하고, 실패하면 경로만이라도 남긴다."""
+    try:
+        set_clipboard_text_and_image(str(filepath), image)
+    except Exception as e:
+        print(f"이미지 포함 복사 실패, 경로만 복사: {e}")
+        try:
+            pyperclip.copy(str(filepath))
+        except Exception as e2:
+            print(f"클립보드 복사 실패: {e2}")
 
 def ensure_save_dir():
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -144,7 +219,7 @@ def run_capture_sequence(root):
             ensure_save_dir()
             filepath = generate_filename()
             cropped.save(str(filepath))
-            pyperclip.copy(str(filepath))
+            copy_capture_to_clipboard(filepath, cropped)
     except Exception as e:
         print(f"Error: {e}")
 
