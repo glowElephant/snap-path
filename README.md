@@ -132,9 +132,38 @@ pip install -r requirements-linux.txt
 python3 snap_path_linux.py
 ```
 
-`Ctrl+Alt+S` → 화면 얼림 → 드래그로 영역 선택 → 자동 저장 + 경로 클립보드 복사. 사용법은 Windows와 동일.
+`Ctrl+Alt+S` → 화면 얼림 → 드래그로 영역 선택 → 자동 저장 + 클립보드 복사.
 
 종료는 트레이 메뉴 또는 터미널에서 `Ctrl+C`.
+
+### 클립보드 — Windows 와 방식이 다르다
+
+Windows 는 단축키를 둘로 갈라 **한 번에 한 포맷만** 올린다(둘 다 올리면 카톡·워드에서
+이미지에 경로까지 딸려 붙기 때문). Linux 는 반대로 `snap_clip_helper.py` 가
+**이미지·경로·파일URL 을 한 번에 탑재**하고 붙여넣는 앱이 고르게 한다.
+
+| 포맷 | 받는 곳 |
+|---|---|
+| `image/*` | PPT · 노션 · 카톡 |
+| `text/plain` | 터미널 · 에디터 (경로 문자열) |
+| `text/uri-list` | 파일 매니저 |
+
+X11 클립보드는 **소유 프로세스가 죽으면 내용이 사라진다**(클립보드 매니저가 없을 때).
+그래서 헬퍼가 상주하며 소유를 유지하고, 다른 앱이 새로 복사해 소유권을 잃으면 스스로 종료한다.
+헬퍼가 없으면 `pyperclip` 으로 경로만 복사하는 폴백으로 떨어진다.
+
+⚠ **아직 실사용 검증 전이다.** Windows 가 같은 방식을 넣었다가 되돌린 이력이 있으므로
+(`6d5e516` → `6c22217`), 리눅스에서도 같은 증상이 나면 단축키 분리로 바꿀 것.
+
+### 데모 GIF 녹화
+
+`record-gif.sh` — ffmpeg x11grab 으로 화면을 녹화해 GIF 로 변환한다. x11grab 은 루트
+윈도우를 통째로 찍으므로 snap-path 의 얼림·선택 오버레이도 그대로 담긴다.
+
+```bash
+./record-gif.sh                     # 12초, 주 모니터 전체, GIF 폭 1000
+./record-gif.sh 12 1280x720+300+200 # 특정 영역만 (권장 — 작고 집중된 GIF)
+```
 
 ### 저장 경로
 
@@ -150,7 +179,7 @@ python3 snap_path_linux.py
 | 멀티모니터 캡쳐 | `ImageGrab.grab(all_screens=True)` | mss (가상 스크린 전체) |
 | DPI 인식 | `ctypes.windll` | 불필요 (제거) |
 | 트레이 | pystray (Win32) | pystray (AppIndicator) |
-| 클립보드 | 경로/이미지 단축키 분리 (`CF_UNICODETEXT` 또는 `CF_DIB`) | 경로 텍스트만 (pyperclip) |
+| 클립보드 | 경로/이미지 단축키 분리 (`CF_UNICODETEXT` 또는 `CF_DIB`) | 헬퍼 상주, 세 포맷 동시 (`snap_clip_helper.py`) |
 
 > **GNOME 주의**: GNOME은 기본 시스템 트레이가 없어 트레이 아이콘이 안 보일 수 있습니다. 트레이 표시에 실패해도 핫키·캡쳐·저장·클립보드 등 핵심 기능은 정상 동작합니다.
 
@@ -161,3 +190,4 @@ python3 snap_path_linux.py
 - pyperclip — 클립보드 복사 (xclip/xsel 백엔드 필요)
 - pystray — 시스템 트레이 아이콘 (선택)
 - Pillow — 이미지 처리
+- PySide6 — 클립보드 헬퍼(`snap_clip_helper.py`) 전용. 없으면 경로만 복사로 폴백

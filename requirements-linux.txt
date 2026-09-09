@@ -3,3 +3,4 @@ pynput
 pyperclip
 pystray
 Pillow
+PySide6

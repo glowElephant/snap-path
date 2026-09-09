@@ -13,6 +13,7 @@ Windows 원본(snap_path.pyw)의 리눅스 포팅 버전.
 종료는 트레이 메뉴 또는 터미널에서 Ctrl+C.
 """
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -128,6 +129,21 @@ class FrozenScreenSelector:
         self.top.destroy()
 
 
+def copy_to_clipboard(filepath):
+    """이미지+경로+파일URL을 클립보드에 동시 탑재 (PySide6 헬퍼 상주 프로세스).
+
+    붙여넣는 앱에 따라: 이미지 앱→그림, 텍스트 앱(CLI/메모장)→경로.
+    헬퍼가 없으면 경로만 복사(pyperclip)로 폴백.
+    """
+    helper = Path(__file__).parent / "snap_clip_helper.py"
+    if helper.is_file():
+        # 이전 헬퍼 정리 ([s] 브래킷 = pkill 자기매칭 방지)
+        subprocess.run(["pkill", "-f", "[s]nap_clip_helper.py"], check=False)
+        subprocess.Popen([sys.executable, str(helper), filepath])
+    else:
+        pyperclip.copy(filepath)  # 폴백: 경로만
+
+
 def run_capture_sequence(root):
     """메인 스레드(tkinter)에서 실행되는 실제 캡쳐 로직."""
     try:
@@ -143,9 +159,9 @@ def run_capture_sequence(root):
             filepath = generate_filename()
             cropped.save(str(filepath))
             try:
-                pyperclip.copy(str(filepath))
+                copy_to_clipboard(str(filepath))
             except Exception as e:
-                print(f"클립보드 복사 실패 (xclip/xsel 설치 필요): {e}")
+                print(f"클립보드 복사 실패: {e}")
             print(f"저장됨: {filepath}")
     except Exception as e:
         print(f"Error: {e}")
