@@ -103,12 +103,17 @@ $lnk.Save()
 
 ### 트레이 "재실행"이 exe에서 깨졌던 이유
 
-`os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])`로 자기를 다시 띄우고 있었는데, exe로 빌드하면 `__file__`이 **PyInstaller가 만든 임시 폴더(`_MEIxxxx`) 경로**입니다. 이 폴더는 프로세스가 끝나면 지워지므로, 그 경로를 인자로 넘긴 새 프로세스는 정상적으로 뜨지 못합니다.
+증상: 재실행을 누르면 `Security validation failure: fail to obtain executable path for parent process!` 창이 떴습니다. **PyInstaller 부트로더**가 내는 메시지입니다.
 
-두 가지를 고쳤습니다.
+원인은 세 겹이었고, 셋 다 고쳐야 동작합니다.
 
-- `sys.frozen`으로 exe 여부를 판별해 **exe일 때는 자기 자신만** 실행합니다 (`relaunch_command()`).
-- `os.execv` 대신 **mainloop가 끝난 뒤 `subprocess.Popen`**으로 띄웁니다. 트레이 콜백에서 바로 실행하면 아직 `RegisterHotKey`를 쥔 상태라 새 프로세스가 핫키 등록에 실패합니다.
+**1. `__file__`이 임시 경로다.** `os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])`로 자기를 띄우고 있었는데, exe에서 `__file__`은 종료와 함께 지워지는 `_MEIxxxx` 폴더 경로입니다. → `sys.frozen`으로 판별해 **exe는 자기 자신만** 실행합니다 (`relaunch_command()`).
+
+**2. `_PYI_*` 환경변수가 상속된다 (이게 위 에러의 직접 원인).** onefile exe는 "부모(압축 해제) + 자식(앱)" 두 프로세스로 돌고, 자식은 `_PYI_ARCHIVE_FILE`·`_PYI_APPLICATION_HOME_DIR`·`_PYI_PARENT_PROCESS_LEVEL`로 자기가 자식임을 압니다. `subprocess.Popen`은 환경을 그대로 물려주므로, 새 exe가 자신을 **이미 압축 해제된 자식으로 오인**하고 죽어가는 부모의 exe 경로를 검증하려다 실패합니다. → `relaunch_env()`가 `_PYI`로 시작하는 변수를 걷어냅니다.
+
+**3. 핫키를 쥔 채로 띄우면 안 된다.** 트레이 콜백에서 바로 실행하면 아직 `RegisterHotKey`를 놓지 않은 상태라 새 프로세스가 등록에 실패합니다. → `_restart_requested` 플래그로 미뤄, **mainloop가 끝난 뒤** `DETACHED_PROCESS`로 띄웁니다.
+
+진단이 가능했던 건 `--noconsole` exe에는 stderr가 없어 예외가 사라지기 때문에 **로그 파일**(`~/Pictures/SnapPath/snap-path.log`)을 붙였기 때문입니다. 재실행 경로가 이 로그에 단계별로 남습니다.
 
 ## 의존성 (Windows)
 

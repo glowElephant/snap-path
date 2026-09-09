@@ -6,6 +6,7 @@ import ctypes
 import ctypes.wintypes
 import threading
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -14,6 +15,30 @@ from PIL import ImageGrab, Image, ImageTk
 import pystray
 import tkinter as tk
 from screeninfo import get_monitors
+
+# --noconsole exe는 stderr가 없어 예외가 흔적 없이 사라진다.
+# 진단이 가능하도록 로그 파일에 남긴다.
+LOG_FILE = Path.home() / "Pictures" / "SnapPath" / "snap-path.log"
+
+def log(message):
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {message}\n")
+    except Exception:
+        pass  # 로그 실패가 앱을 멈추게 하면 안 된다
+
+def log_exception(exc_type, exc_value, exc_tb):
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} 처리되지 않은 예외\n")
+            traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+    except Exception:
+        pass
+
+sys.excepthook = log_exception
+threading.excepthook = lambda a: log_exception(a.exc_type, a.exc_value, a.exc_traceback)
 
 # 1. Windows DPI 인식 설정 (고해상도/멀티 모니터 필수)
 def set_dpi_awareness():
@@ -319,6 +344,15 @@ def relaunch_command():
         return [sys.executable]
     return [sys.executable, os.path.abspath(__file__)]
 
+def relaunch_env():
+    """PyInstaller가 onefile 자식 표시로 쓰는 _PYI_* 를 걷어낸 환경.
+
+    그대로 물려주면 새 exe가 자신을 '이미 압축 해제된 자식'으로 오인하고
+    죽어가는 부모의 exe 경로를 검증하려다 실패한다:
+      Security validation failure: fail to obtain executable path for parent process!
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith("_PYI")}
+
 def setup_tray_icon(root):
     """트레이 아이콘을 별도 스레드에서 실행"""
     icon_image = create_icon_image()
@@ -330,6 +364,7 @@ def setup_tray_icon(root):
     def restart_app(icon):
         # 실제 재실행은 mainloop가 끝난 뒤 main()에서 한다.
         # 여기서 바로 띄우면 아직 핫키를 쥔 채라 새 프로세스가 등록에 실패한다.
+        log("트레이 재실행 클릭")
         _restart_requested.set()
         icon.stop()
         root.after(0, root.quit)
@@ -374,6 +409,8 @@ def hotkey_listener(root):
         user32.UnregisterHotKey(None, hotkey_id)
 
 def main():
+    log(f"시작 (frozen={getattr(sys, 'frozen', False)}, exe={sys.executable})")
+
     # 1. 메인 스레드에서 Tkinter 루트 생성 (숨김 상태)
     root = tk.Tk()
     root.withdraw() # 창을 숨겨둠
@@ -390,7 +427,21 @@ def main():
     # 5. 트레이에서 재실행을 눌렀다면 여기서 새로 띄운다.
     #    핫키를 놓은 뒤에 실행해야 새 프로세스가 등록에 성공한다.
     if _restart_requested.is_set():
-        subprocess.Popen(relaunch_command(), close_fds=True)
+        cmd = relaunch_command()
+        env = relaunch_env()
+        dropped = sorted(k for k in os.environ if k.startswith("_PYI"))
+        log(f"재실행 시도: {cmd} (제거한 _PYI 변수: {dropped})")
+        try:
+            # DETACHED_PROCESS로 부모와 끊어 이 프로세스의 종료에 휘말리지 않게 한다
+            subprocess.Popen(
+                cmd, env=env, close_fds=True,
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+            log("재실행 프로세스 생성됨")
+        except Exception as e:
+            log(f"재실행 실패: {e!r}")
+            raise
+    log("종료")
 
 if __name__ == "__main__":
     main()
