@@ -101,6 +101,15 @@ $lnk.Save()
 
 > 소스를 고친 뒤에는 **exe를 다시 빌드**해야 반영됩니다. 시작 프로그램은 exe를 실행하므로 `.pyw`만 수정하면 부팅 시에는 옛 동작이 그대로입니다.
 
+### 트레이 "재실행"이 exe에서 깨졌던 이유
+
+`os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])`로 자기를 다시 띄우고 있었는데, exe로 빌드하면 `__file__`이 **PyInstaller가 만든 임시 폴더(`_MEIxxxx`) 경로**입니다. 이 폴더는 프로세스가 끝나면 지워지므로, 그 경로를 인자로 넘긴 새 프로세스는 정상적으로 뜨지 못합니다.
+
+두 가지를 고쳤습니다.
+
+- `sys.frozen`으로 exe 여부를 판별해 **exe일 때는 자기 자신만** 실행합니다 (`relaunch_command()`).
+- `os.execv` 대신 **mainloop가 끝난 뒤 `subprocess.Popen`**으로 띄웁니다. 트레이 콜백에서 바로 실행하면 아직 `RegisterHotKey`를 쥔 상태라 새 프로세스가 핫키 등록에 실패합니다.
+
 ## 의존성 (Windows)
 
 - Pillow — 스크린샷 캡쳐 및 이미지 처리

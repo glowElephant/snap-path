@@ -1,5 +1,6 @@
 import io
 import os
+import subprocess
 import sys
 import ctypes
 import ctypes.wintypes
@@ -29,6 +30,9 @@ set_dpi_awareness()
 HOTKEY_AUTO = "Ctrl+Alt+S"
 HOTKEY_IMAGE = "Ctrl+Alt+Shift+S"
 SAVE_DIR = Path.home() / "Pictures" / "SnapPath"
+
+# 트레이 "재실행" 요청 — mainloop가 끝난 뒤 main()이 확인한다
+_restart_requested = threading.Event()
 
 # RegisterHotKey 상수
 MOD_ALT = 0x0001
@@ -305,6 +309,16 @@ def create_icon_image():
 
     return img
 
+def relaunch_command():
+    """자기 자신을 다시 띄우는 명령.
+
+    exe로 빌드되면 __file__은 종료할 때 지워지는 PyInstaller 임시 경로라
+    인자로 넘기면 안 된다. exe는 자기 자신만 실행한다.
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, os.path.abspath(__file__)]
+
 def setup_tray_icon(root):
     """트레이 아이콘을 별도 스레드에서 실행"""
     icon_image = create_icon_image()
@@ -314,12 +328,11 @@ def setup_tray_icon(root):
         root.after(0, root.quit)
 
     def restart_app(icon):
+        # 실제 재실행은 mainloop가 끝난 뒤 main()에서 한다.
+        # 여기서 바로 띄우면 아직 핫키를 쥔 채라 새 프로세스가 등록에 실패한다.
+        _restart_requested.set()
         icon.stop()
         root.after(0, root.quit)
-        # 현재 스크립트를 다시 실행
-        python = sys.executable
-        script = os.path.abspath(__file__)
-        os.execv(python, [python, script])
 
     menu = pystray.Menu(
         pystray.MenuItem(f"{HOTKEY_AUTO} — 자동 (앱이 선택)", lambda: None, enabled=False),
@@ -373,6 +386,11 @@ def main():
 
     # 4. 메인 스레드는 오직 GUI 루프만 돌림 (안정성 확보)
     root.mainloop()
+
+    # 5. 트레이에서 재실행을 눌렀다면 여기서 새로 띄운다.
+    #    핫키를 놓은 뒤에 실행해야 새 프로세스가 등록에 성공한다.
+    if _restart_requested.is_set():
+        subprocess.Popen(relaunch_command(), close_fds=True)
 
 if __name__ == "__main__":
     main()
