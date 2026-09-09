@@ -26,7 +26,7 @@ def set_dpi_awareness():
 
 set_dpi_awareness()
 
-HOTKEY_PATH = "Ctrl+Alt+S"
+HOTKEY_AUTO = "Ctrl+Alt+S"
 HOTKEY_IMAGE = "Ctrl+Alt+Shift+S"
 SAVE_DIR = Path.home() / "Pictures" / "SnapPath"
 
@@ -35,14 +35,25 @@ MOD_ALT = 0x0001
 MOD_CTRL = 0x0002
 MOD_SHIFT = 0x0004
 VK_S = 0x53
-HOTKEY_ID_PATH = 1
+HOTKEY_ID_AUTO = 1
 HOTKEY_ID_IMAGE = 2
 WM_HOTKEY = 0x0312
 
 # 클립보드 상수
 CF_UNICODETEXT = 13
 CF_DIB = 8
+CF_HDROP = 15
 GMEM_MOVEABLE = 0x0002
+
+class DROPFILES(ctypes.Structure):
+    """CF_HDROP 헤더 — 뒤에 유니코드 경로 + 이중 널이 붙는다."""
+    _fields_ = [
+        ("pFiles", ctypes.c_uint32),   # 경로 목록까지의 오프셋
+        ("pt_x", ctypes.c_long),
+        ("pt_y", ctypes.c_long),
+        ("fNC", ctypes.c_int),
+        ("fWide", ctypes.c_int),       # 1이면 유니코드 경로
+    ]
 
 # 64비트에서 핸들이 32비트로 잘리지 않도록 시그니처를 명시해야 한다
 _user32 = ctypes.windll.user32
@@ -70,11 +81,11 @@ def _alloc_global(data: bytes):
     _kernel32.GlobalUnlock(handle)
     return handle
 
-def set_clipboard_single(fmt, data):
-    """클립보드를 비우고 포맷 하나만 올린다.
+def set_clipboard_formats(entries):
+    """클립보드를 비우고 (포맷, 데이터)를 순서대로 올린다.
 
-    텍스트와 이미지를 함께 올리면 카톡·워드처럼 둘 다 받는 앱에서
-    이미지에 경로까지 딸려 붙는다. 그래서 한 번에 하나만 올린다.
+    Windows는 먼저 등록한 포맷의 우선순위가 높다. 이미지를 앞에 두면
+    이미지를 받을 수 있는 앱은 이미지를 고른다.
     """
     # 다른 앱이 클립보드를 쥐고 있을 수 있어 잠깐 재시도
     for _ in range(10):
@@ -86,18 +97,53 @@ def set_clipboard_single(fmt, data):
 
     try:
         _user32.EmptyClipboard()
-        handle = _alloc_global(data)
-        if not _user32.SetClipboardData(fmt, handle):
-            # 소유권이 넘어가지 않았으니 직접 해제
-            _kernel32.GlobalFree(handle)
-            raise OSError(f"SetClipboardData 실패 (format={fmt})")
+        for fmt, data in entries:
+            handle = _alloc_global(data)
+            if not _user32.SetClipboardData(fmt, handle):
+                # 소유권이 넘어가지 않았으니 직접 해제
+                _kernel32.GlobalFree(handle)
+                raise OSError(f"SetClipboardData 실패 (format={fmt})")
     finally:
         _user32.CloseClipboard()
+
+def _encode_text(text):
+    return str(text).encode("utf-16-le") + b"\x00\x00"
+
+def _encode_dib(image):
+    # CF_DIB는 BMP에서 BITMAPFILEHEADER(14바이트)를 뗀 나머지
+    buffer = io.BytesIO()
+    image.convert("RGB").save(buffer, "BMP")
+    return buffer.getvalue()[14:]
+
+def _encode_hdrop(filepath):
+    """탐색기·메신저가 첨부 파일로 받는 CF_HDROP 페이로드."""
+    header = DROPFILES()
+    header.pFiles = ctypes.sizeof(DROPFILES)
+    header.fWide = 1
+    paths = str(filepath).encode("utf-16-le") + b"\x00\x00\x00\x00"
+    return bytes(header) + paths
+
+def copy_capture_to_clipboard(filepath, image):
+    """이미지·파일·경로를 한 번에 올려 붙여넣는 앱이 고르게 한다.
+
+    리눅스 헬퍼(snap_clip_helper.py)와 같은 방식이고, 순서로 우선순위를 준다.
+    이미지를 받는 앱은 이미지를, 텍스트만 받는 곳은 경로를 가져간다.
+    """
+    entries = [
+        (CF_DIB, _encode_dib(image)),          # PPT·카톡·워드
+        (CF_HDROP, _encode_hdrop(filepath)),   # 탐색기·첨부
+        (CF_UNICODETEXT, _encode_text(filepath)),  # 터미널·AI 프롬프트
+    ]
+    try:
+        set_clipboard_formats(entries)
+    except Exception as e:
+        print(f"동시 탑재 실패, 경로만 복사: {e}")
+        copy_path_to_clipboard(filepath)
 
 def copy_path_to_clipboard(filepath):
     """저장 경로만 복사 — 터미널·주소창·AI 프롬프트용."""
     try:
-        set_clipboard_single(CF_UNICODETEXT, str(filepath).encode("utf-16-le") + b"\x00\x00")
+        set_clipboard_formats([(CF_UNICODETEXT, _encode_text(filepath))])
     except Exception as e:
         print(f"경로 복사 실패, pyperclip으로 재시도: {e}")
         try:
@@ -106,12 +152,9 @@ def copy_path_to_clipboard(filepath):
             print(f"클립보드 복사 실패: {e2}")
 
 def copy_image_to_clipboard(image):
-    """이미지만 복사 — 카톡·워드·파워포인트용."""
-    # CF_DIB는 BMP에서 BITMAPFILEHEADER(14바이트)를 뗀 나머지
-    buffer = io.BytesIO()
-    image.convert("RGB").save(buffer, "BMP")
+    """이미지만 복사 — 자동 판별이 안 먹는 앱에서 쓰는 확실한 수단."""
     try:
-        set_clipboard_single(CF_DIB, buffer.getvalue()[14:])
+        set_clipboard_formats([(CF_DIB, _encode_dib(image))])
     except Exception as e:
         print(f"이미지 복사 실패: {e}")
 
@@ -210,8 +253,8 @@ class FrozenScreenSelector:
 def run_capture_sequence(root, as_image=False):
     """메인 스레드에서 실행될 실제 캡처 로직
 
-    as_image=False면 저장 경로를, True면 이미지를 클립보드에 올린다.
-    파일은 어느 쪽이든 저장한다.
+    as_image=False면 이미지·파일·경로를 함께 올려 앱이 고르게 하고,
+    True면 이미지만 올린다. 파일은 어느 쪽이든 저장한다.
     """
     try:
         # 1. 캡처 (잠시 대기 후)
@@ -231,7 +274,7 @@ def run_capture_sequence(root, as_image=False):
             if as_image:
                 copy_image_to_clipboard(cropped)
             else:
-                copy_path_to_clipboard(filepath)
+                copy_capture_to_clipboard(filepath, cropped)
     except Exception as e:
         print(f"Error: {e}")
 
@@ -279,8 +322,8 @@ def setup_tray_icon(root):
         os.execv(python, [python, script])
 
     menu = pystray.Menu(
-        pystray.MenuItem(f"{HOTKEY_PATH} — 경로 복사", lambda: None, enabled=False),
-        pystray.MenuItem(f"{HOTKEY_IMAGE} — 이미지 복사", lambda: None, enabled=False),
+        pystray.MenuItem(f"{HOTKEY_AUTO} — 자동 (앱이 선택)", lambda: None, enabled=False),
+        pystray.MenuItem(f"{HOTKEY_IMAGE} — 이미지만", lambda: None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("재실행", restart_app),
         pystray.MenuItem("종료", quit_app)
@@ -293,7 +336,7 @@ def hotkey_listener(root):
     user32 = ctypes.windll.user32
 
     hotkeys = (
-        (HOTKEY_ID_PATH, MOD_CTRL | MOD_ALT, HOTKEY_PATH),
+        (HOTKEY_ID_AUTO, MOD_CTRL | MOD_ALT, HOTKEY_AUTO),
         (HOTKEY_ID_IMAGE, MOD_CTRL | MOD_ALT | MOD_SHIFT, HOTKEY_IMAGE),
     )
     registered = []
@@ -309,7 +352,7 @@ def hotkey_listener(root):
     msg = ctypes.wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
         if msg.message == WM_HOTKEY:
-            if msg.wParam == HOTKEY_ID_PATH:
+            if msg.wParam == HOTKEY_ID_AUTO:
                 root.after(0, run_capture_sequence, root, False)
             elif msg.wParam == HOTKEY_ID_IMAGE:
                 root.after(0, run_capture_sequence, root, True)
