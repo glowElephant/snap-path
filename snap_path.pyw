@@ -26,14 +26,17 @@ def set_dpi_awareness():
 
 set_dpi_awareness()
 
-HOTKEY = "Ctrl+Alt+S"
+HOTKEY_PATH = "Ctrl+Alt+S"
+HOTKEY_IMAGE = "Ctrl+Alt+Shift+S"
 SAVE_DIR = Path.home() / "Pictures" / "SnapPath"
 
 # RegisterHotKey 상수
-MOD_CTRL = 0x0002
 MOD_ALT = 0x0001
+MOD_CTRL = 0x0002
+MOD_SHIFT = 0x0004
 VK_S = 0x53
-HOTKEY_ID = 1
+HOTKEY_ID_PATH = 1
+HOTKEY_ID_IMAGE = 2
 WM_HOTKEY = 0x0312
 
 # 클립보드 상수
@@ -54,7 +57,6 @@ _kernel32.GlobalFree.restype = ctypes.c_void_p
 _user32.OpenClipboard.argtypes = [ctypes.c_void_p]
 _user32.SetClipboardData.restype = ctypes.c_void_p
 _user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
-
 def _alloc_global(data: bytes):
     """클립보드에 넘길 GMEM_MOVEABLE 버퍼를 만들어 데이터를 채운다."""
     handle = _kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
@@ -68,18 +70,12 @@ def _alloc_global(data: bytes):
     _kernel32.GlobalUnlock(handle)
     return handle
 
-def set_clipboard_text_and_image(text, image):
-    """경로 텍스트와 이미지를 클립보드에 함께 올린다.
+def set_clipboard_single(fmt, data):
+    """클립보드를 비우고 포맷 하나만 올린다.
 
-    붙여넣는 쪽이 지원하는 포맷을 골라간다 —
-    터미널·주소창은 경로가, 카톡·워드는 이미지가 붙는다.
+    텍스트와 이미지를 함께 올리면 카톡·워드처럼 둘 다 받는 앱에서
+    이미지에 경로까지 딸려 붙는다. 그래서 한 번에 하나만 올린다.
     """
-    # CF_DIB는 BMP에서 BITMAPFILEHEADER(14바이트)를 뗀 나머지
-    buffer = io.BytesIO()
-    image.convert("RGB").save(buffer, "BMP")
-    dib = buffer.getvalue()[14:]
-    encoded_text = text.encode("utf-16-le") + b"\x00\x00"
-
     # 다른 앱이 클립보드를 쥐고 있을 수 있어 잠깐 재시도
     for _ in range(10):
         if _user32.OpenClipboard(None):
@@ -90,25 +86,34 @@ def set_clipboard_text_and_image(text, image):
 
     try:
         _user32.EmptyClipboard()
-        for fmt, payload in ((CF_UNICODETEXT, encoded_text), (CF_DIB, dib)):
-            handle = _alloc_global(payload)
-            if not _user32.SetClipboardData(fmt, handle):
-                # 소유권이 넘어가지 않았으니 직접 해제
-                _kernel32.GlobalFree(handle)
-                raise OSError(f"SetClipboardData 실패 (format={fmt})")
+        handle = _alloc_global(data)
+        if not _user32.SetClipboardData(fmt, handle):
+            # 소유권이 넘어가지 않았으니 직접 해제
+            _kernel32.GlobalFree(handle)
+            raise OSError(f"SetClipboardData 실패 (format={fmt})")
     finally:
         _user32.CloseClipboard()
 
-def copy_capture_to_clipboard(filepath, image):
-    """복합 포맷 복사를 시도하고, 실패하면 경로만이라도 남긴다."""
+def copy_path_to_clipboard(filepath):
+    """저장 경로만 복사 — 터미널·주소창·AI 프롬프트용."""
     try:
-        set_clipboard_text_and_image(str(filepath), image)
+        set_clipboard_single(CF_UNICODETEXT, str(filepath).encode("utf-16-le") + b"\x00\x00")
     except Exception as e:
-        print(f"이미지 포함 복사 실패, 경로만 복사: {e}")
+        print(f"경로 복사 실패, pyperclip으로 재시도: {e}")
         try:
             pyperclip.copy(str(filepath))
         except Exception as e2:
             print(f"클립보드 복사 실패: {e2}")
+
+def copy_image_to_clipboard(image):
+    """이미지만 복사 — 카톡·워드·파워포인트용."""
+    # CF_DIB는 BMP에서 BITMAPFILEHEADER(14바이트)를 뗀 나머지
+    buffer = io.BytesIO()
+    image.convert("RGB").save(buffer, "BMP")
+    try:
+        set_clipboard_single(CF_DIB, buffer.getvalue()[14:])
+    except Exception as e:
+        print(f"이미지 복사 실패: {e}")
 
 def ensure_save_dir():
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -202,8 +207,12 @@ class FrozenScreenSelector:
             self.result_bbox = (x1, y1, x2, y2)
         self.top.destroy()
 
-def run_capture_sequence(root):
-    """메인 스레드에서 실행될 실제 캡처 로직"""
+def run_capture_sequence(root, as_image=False):
+    """메인 스레드에서 실행될 실제 캡처 로직
+
+    as_image=False면 저장 경로를, True면 이미지를 클립보드에 올린다.
+    파일은 어느 쪽이든 저장한다.
+    """
     try:
         # 1. 캡처 (잠시 대기 후)
         time.sleep(0.2)
@@ -219,7 +228,10 @@ def run_capture_sequence(root):
             ensure_save_dir()
             filepath = generate_filename()
             cropped.save(str(filepath))
-            copy_capture_to_clipboard(filepath, cropped)
+            if as_image:
+                copy_image_to_clipboard(cropped)
+            else:
+                copy_path_to_clipboard(filepath)
     except Exception as e:
         print(f"Error: {e}")
 
@@ -267,7 +279,8 @@ def setup_tray_icon(root):
         os.execv(python, [python, script])
 
     menu = pystray.Menu(
-        pystray.MenuItem(f"SnapPath ({HOTKEY})", lambda: None, enabled=False),
+        pystray.MenuItem(f"{HOTKEY_PATH} — 경로 복사", lambda: None, enabled=False),
+        pystray.MenuItem(f"{HOTKEY_IMAGE} — 이미지 복사", lambda: None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("재실행", restart_app),
         pystray.MenuItem("종료", quit_app)
@@ -279,16 +292,30 @@ def hotkey_listener(root):
     """RegisterHotKey Win32 API로 글로벌 핫키 감지 (별도 스레드)"""
     user32 = ctypes.windll.user32
 
-    if not user32.RegisterHotKey(None, HOTKEY_ID, MOD_CTRL | MOD_ALT, VK_S):
-        print(f"RegisterHotKey 실패 — 다른 프로그램이 {HOTKEY}를 사용 중일 수 있음")
+    hotkeys = (
+        (HOTKEY_ID_PATH, MOD_CTRL | MOD_ALT, HOTKEY_PATH),
+        (HOTKEY_ID_IMAGE, MOD_CTRL | MOD_ALT | MOD_SHIFT, HOTKEY_IMAGE),
+    )
+    registered = []
+    for hotkey_id, mods, label in hotkeys:
+        if user32.RegisterHotKey(None, hotkey_id, mods, VK_S):
+            registered.append(hotkey_id)
+        else:
+            print(f"RegisterHotKey 실패 — 다른 프로그램이 {label}를 사용 중일 수 있음")
+
+    if not registered:
         return
 
     msg = ctypes.wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
-        if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_ID:
-            root.after(0, run_capture_sequence, root)
+        if msg.message == WM_HOTKEY:
+            if msg.wParam == HOTKEY_ID_PATH:
+                root.after(0, run_capture_sequence, root, False)
+            elif msg.wParam == HOTKEY_ID_IMAGE:
+                root.after(0, run_capture_sequence, root, True)
 
-    user32.UnregisterHotKey(None, HOTKEY_ID)
+    for hotkey_id in registered:
+        user32.UnregisterHotKey(None, hotkey_id)
 
 def main():
     # 1. 메인 스레드에서 Tkinter 루트 생성 (숨김 상태)
