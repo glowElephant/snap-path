@@ -10,6 +10,8 @@ Windows 원본(snap_path.pyw)의 리눅스 포팅 버전.
   - 트레이 아이콘: pystray (있으면 사용, GNOME 등에서 실패해도 핵심 기능은 동작)
 
 핫키 Ctrl+Alt+S → 화면 얼림 → 드래그로 영역 선택 → 저장 + 경로 클립보드 복사.
+캡쳐 직후 화면 위쪽에 [✏ 편집] 버튼이 EDIT_OFFER_SEC 초 떠 있다 — 누르면 펜·네모로 표시하는 창이 열리고,
+[확인](Enter)이면 표시한 이미지(`*_edit.png`)가 클립보드에, [취소](Esc)·버튼 안 누름이면 원본이 그대로 남는다.
 종료는 트레이 메뉴 또는 터미널에서 Ctrl+C.
 """
 import os
@@ -30,6 +32,9 @@ HOTKEY = "Ctrl+Alt+S"
 # pynput GlobalHotKeys 표기 (<ctrl>+<alt>+s)
 HOTKEY_PYNPUT = "<ctrl>+<alt>+s"
 SAVE_DIR = Path.home() / "Pictures" / "SnapPath"
+EDIT_OFFER_SEC = 3.0          # 캡쳐 후 [편집] 버튼이 떠 있는 시간
+PEN_COLORS = ["#ff3b30", "#ffcc00", "#34c759", "#0a84ff", "#000000", "#ffffff"]
+PEN_WIDTHS = [3, 6, 10]
 
 
 def ensure_save_dir():
@@ -144,6 +149,168 @@ def copy_to_clipboard(filepath):
         pyperclip.copy(filepath)  # 폴백: 경로만
 
 
+class EditOffer:
+    """캡쳐 직후 화면 위쪽 가운데에 잠깐 뜨는 [✏ 편집] 버튼. 포커스를 뺏지 않고, 시간이 지나면 스스로 사라진다."""
+    def __init__(self, root, on_edit, cx, top_y):
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        b = tk.Button(self.win, text="✏  편집", font=("Sans", 12, "bold"), bg="#0a84ff", fg="white",
+                      activebackground="#0060df", activeforeground="white", relief="flat", padx=18, pady=6,
+                      command=lambda: (self.close(), on_edit()))
+        b.pack()
+        self.win.update_idletasks()
+        w = self.win.winfo_reqwidth()
+        self.win.geometry(f"+{int(cx - w / 2)}+{int(top_y + 12)}")
+        self.win.after(int(EDIT_OFFER_SEC * 1000), self.close)
+
+    def close(self):
+        if self.win.winfo_exists():
+            self.win.destroy()
+
+
+class Annotator:
+    """펜·네모로 캡쳐 이미지에 표시. 화면엔 캔버스로 그리고, 같은 획을 원본 해상도 PIL 이미지에도 그린다."""
+    def __init__(self, root, image):
+        from PIL import ImageDraw
+        self.root, self.base = root, image.convert("RGB")
+        self.color, self.width, self.tool = PEN_COLORS[0], PEN_WIDTHS[1], "pen"
+        self.strokes = []      # [(tool, color, width, [(x,y) 원본좌표...])]
+        self.cur = None
+        self.result = None
+        self._draw_mod = ImageDraw
+
+        self.top = tk.Toplevel(root)
+        self.top.title("SnapPath 편집 — 확인 Enter · 취소 Esc · 되돌리기 Ctrl+Z")
+        self.top.attributes("-topmost", True)
+        # 화면보다 크면 줄여서 보여준다(좌표는 scale 로 되돌린다)
+        sw, sh = self.top.winfo_screenwidth() * 0.9, self.top.winfo_screenheight() * 0.85
+        self.scale = min(1.0, sw / self.base.width, sh / self.base.height)
+        dw, dh = int(self.base.width * self.scale), int(self.base.height * self.scale)
+        shown = self.base if self.scale == 1.0 else self.base.resize((dw, dh))
+        self._tkimg = ImageTk.PhotoImage(shown)
+
+        bar = tk.Frame(self.top, bg="#222")
+        bar.pack(fill=tk.X)
+        self.tool_btns = {}
+        for key, label in (("pen", "✏ 펜"), ("rect", "▭ 네모")):
+            btn = tk.Button(bar, text=label, command=lambda k=key: self._set_tool(k), relief="flat", padx=10)
+            btn.pack(side=tk.LEFT, padx=2, pady=4)
+            self.tool_btns[key] = btn
+        tk.Label(bar, text="  ", bg="#222").pack(side=tk.LEFT)
+        self.color_btns = {}
+        for c in PEN_COLORS:
+            btn = tk.Button(bar, bg=c, activebackground=c, width=2, relief="flat", command=lambda c=c: self._set_color(c))
+            btn.pack(side=tk.LEFT, padx=2, pady=4)
+            self.color_btns[c] = btn
+        tk.Label(bar, text="  ", bg="#222").pack(side=tk.LEFT)
+        for wd in PEN_WIDTHS:
+            tk.Button(bar, text=f"{wd}px", relief="flat", command=lambda w=wd: self._set_width(w)).pack(side=tk.LEFT, padx=1)
+        tk.Button(bar, text="확인", bg="#34c759", fg="white", relief="flat", padx=14,
+                  command=self._ok).pack(side=tk.RIGHT, padx=4, pady=4)
+        tk.Button(bar, text="취소", relief="flat", padx=10, command=self._cancel).pack(side=tk.RIGHT, padx=2)
+        tk.Button(bar, text="↶ 되돌리기", relief="flat", command=self._undo).pack(side=tk.RIGHT, padx=2)
+
+        self.canvas = tk.Canvas(self.top, width=dw, height=dh, highlightthickness=0, cursor="pencil")
+        self.canvas.pack()
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self._tkimg)
+        self.canvas.bind("<ButtonPress-1>", self._press)
+        self.canvas.bind("<B1-Motion>", self._drag)
+        self.canvas.bind("<ButtonRelease-1>", self._release)
+        self.top.bind("<Return>", lambda e: self._ok())
+        self.top.bind("<Escape>", lambda e: self._cancel())
+        self.top.bind("<Control-z>", lambda e: self._undo())
+        self.top.protocol("WM_DELETE_WINDOW", self._cancel)
+        self._set_tool("pen"); self._set_color(self.color)
+        self.top.focus_force()
+
+    def run(self):
+        self.root.wait_window(self.top)
+        return self.result
+
+    def _set_tool(self, t):
+        self.tool = t
+        for k, b in self.tool_btns.items():
+            b.configure(relief="sunken" if k == t else "flat")
+
+    def _set_color(self, c):
+        self.color = c
+        for k, b in self.color_btns.items():
+            b.configure(relief="sunken" if k == c else "flat", bd=3 if k == c else 1)
+
+    def _set_width(self, w):
+        self.width = w
+
+    def _press(self, e):
+        self.cur = [self.tool, self.color, self.width, [(e.x, e.y)], []]   # 화면좌표, 캔버스 id 들
+
+    def _drag(self, e):
+        if not self.cur:
+            return
+        tool, color, width, pts, ids = self.cur
+        w = max(1, width * self.scale)
+        if tool == "pen":
+            x0, y0 = pts[-1]
+            ids.append(self.canvas.create_line(x0, y0, e.x, e.y, fill=color, width=w, capstyle=tk.ROUND, smooth=True))
+            pts.append((e.x, e.y))
+        else:
+            for i in ids:
+                self.canvas.delete(i)
+            ids[:] = [self.canvas.create_rectangle(*pts[0], e.x, e.y, outline=color, width=w)]
+            pts[1:] = [(e.x, e.y)]
+
+    def _release(self, e):
+        if self.cur and len(self.cur[3]) > 1:
+            self.strokes.append(self.cur)
+        elif self.cur:
+            for i in self.cur[4]:
+                self.canvas.delete(i)
+        self.cur = None
+
+    def _undo(self):
+        if self.strokes:
+            for i in self.strokes.pop()[4]:
+                self.canvas.delete(i)
+
+    def render(self):
+        """획을 원본 해상도에 다시 그린 이미지."""
+        img = self.base.copy()
+        d = self._draw_mod.Draw(img)
+        k = 1 / self.scale
+        for tool, color, width, pts, _ in self.strokes:
+            full = [(x * k, y * k) for x, y in pts]
+            if tool == "pen":
+                d.line(full, fill=color, width=width, joint="curve")
+                r = width / 2
+                for x, y in (full[0], full[-1]):           # 선 끝을 둥글게
+                    d.ellipse((x - r, y - r, x + r, y + r), fill=color)
+            else:
+                (x0, y0), (x1, y1) = full[0], full[-1]
+                d.rectangle((min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)), outline=color, width=width)
+        return img
+
+    def _ok(self):
+        self.result = self.render() if self.strokes else None   # 아무것도 안 그렸으면 원본 유지
+        self.top.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.top.destroy()
+
+
+def offer_edit(root, filepath, cx, top_y):
+    """[편집] 버튼을 띄우고, 누르면 편집 → 확인 시 *_edit.png 저장 + 클립보드 교체."""
+    def on_edit():
+        edited = Annotator(root, Image.open(filepath)).run()
+        if edited is None:
+            return                                   # 원본이 이미 클립보드에 있다
+        out = Path(filepath).with_name(Path(filepath).stem + "_edit.png")
+        edited.save(str(out))
+        copy_to_clipboard(str(out))
+        print(f"편집본: {out}")
+    EditOffer(root, on_edit, cx, top_y)
+
+
 def run_capture_sequence(root):
     """메인 스레드(tkinter)에서 실행되는 실제 캡쳐 로직."""
     try:
@@ -163,6 +330,13 @@ def run_capture_sequence(root):
             except Exception as e:
                 print(f"클립보드 복사 실패: {e}")
             print(f"저장됨: {filepath}")
+            # 편집 버튼은 캡쳐한 영역이 있던 모니터의 위쪽 가운데에
+            mcx = off_x + (bbox[0] + bbox[2]) / 2
+            mcy = off_y + (bbox[1] + bbox[3]) / 2
+            with mss.mss() as sct:
+                mon = next((m for m in sct.monitors[1:] if m["left"] <= mcx < m["left"] + m["width"]
+                            and m["top"] <= mcy < m["top"] + m["height"]), sct.monitors[0])
+            offer_edit(root, str(filepath), mon["left"] + mon["width"] / 2, mon["top"])
     except Exception as e:
         print(f"Error: {e}")
 
