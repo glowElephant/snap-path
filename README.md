@@ -1,6 +1,53 @@
 # snap-path
 
-화면을 캡쳐하고 저장된 파일 경로를 클립보드에 자동 복사하는 유틸리티.
+`Ctrl+Alt+S` 한 번으로 화면 영역을 캡처해 저장하고, 바로 붙여넣을 수 있게 클립보드에 올리는 도구.
+캡처 직후 펜·네모로 표시도 할 수 있다(리눅스 판).
+
+## 받는 사람용 — 리눅스
+
+**조건**: 우분투(22.04 에서 매일 씀) **X11 세션**. `echo $XDG_SESSION_TYPE` 이 `x11` 이어야 한다.
+`wayland` 면 로그아웃 → 로그인 화면에서 이름을 누른 뒤 오른쪽 아래 톱니 → **Ubuntu on Xorg** 로 로그인한다(Wayland 는 전역 단축키를 막는다).
+
+### 1. 받기·설치
+
+```bash
+git clone https://github.com/glowElephant/snap-path.git ~/snap-path
+cd ~/snap-path
+sudo apt install -y python3-pip python3-tk python3-pil.imagetk xclip gir1.2-ayatanaappindicator3-0.1
+pip install --user -r requirements-linux.txt
+```
+
+우분투 23.04 이상에서 `pip` 이 `externally-managed-environment` 로 막히면 마지막 줄에 `--break-system-packages` 를 붙인다.
+
+### 2. 켜기 + 로그인할 때마다 자동으로
+
+```bash
+mkdir -p ~/.config/autostart
+cat > ~/.config/autostart/snap-path.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Name=SnapPath
+Exec=/usr/bin/python3 $HOME/snap-path/snap_path_linux.py
+X-GNOME-Autostart-enabled=true
+EOF
+setsid -f python3 ~/snap-path/snap_path_linux.py >/dev/null 2>&1
+```
+
+### 3. 쓰기
+
+1. `Ctrl+Alt+S` — 화면이 멈추고 어두워진다
+2. 마우스로 영역을 드래그 — 놓으면 `~/Pictures/SnapPath/` 에 저장되고 클립보드에 올라간다(`Esc` 는 취소)
+3. 3초 동안 화면 위 가운데에 **[✏ 편집]** 이 뜬다 — 누르면 펜·네모로 표시, `Enter` 로 확인(편집본이 클립보드로)
+4. `Ctrl+V` — PPT·카톡·노션엔 **그림**, 터미널·AI 프롬프트엔 **파일 경로**, 파일 매니저엔 **파일**이 붙는다
+
+새 버전 받기: `cd ~/snap-path && git pull` 후 로그아웃·로그인(또는 2번 마지막 줄로 다시 켜기 — 이미 떠 있으면 먼저 끈다).
+끄기: 트레이 아이콘 → 종료. GNOME 은 기본 트레이가 없어 아이콘이 안 보일 수 있다 — 그래도 캡처는 된다.
+
+**윈도우 판**(`snap_path.pyw`)도 있지만 편집 기능이 없고 exe 는 직접 빌드해야 한다 — 아래 "Windows".
+
+---
+
+# 개발 기록
 
 - **Windows**: `snap_path.pyw` (Win32 API 기반)
 - **Linux (X11)**: `snap_path_linux.py` (pynput + mss 기반)
@@ -8,15 +55,15 @@
 ## 기능
 
 - **단축키 한 번**으로 화면 캡쳐 → 저장 → 클립보드 복사
-- **붙여넣는 앱이 포맷을 고름** — 이미지·파일·경로를 함께 올려서 PPT·카톡엔 그림이, 터미널엔 경로가 붙음 (`Ctrl+Alt+Shift+S`는 이미지만 강제)
+- **붙여넣는 앱이 포맷을 고름** — 이미지·파일·경로를 함께 올려서 PPT·카톡엔 그림이, 터미널엔 경로가 붙음 (Windows 는 `Ctrl+Alt+Shift+S` 로 이미지만 강제)
 - **화면 얼림(Freeze)** — 단축키를 누른 순간의 화면을 정지시켜 캡쳐 (영상 재생 중에도 정확한 순간 캡쳐 가능)
 - **멀티 모니터 지원** — 모니터 개수에 상관없이 모든 화면에서 캡쳐 가능
 - **고해상도(DPI) 대응** — 4K 등 고해상도 모니터에서도 정확한 좌표 캡쳐
 - **백그라운드 실행** — 시스템 트레이에 상주, 콘솔 창 없음
 
-## 사용법
+## Windows
 
-### exe 빌드 (권장)
+### exe 빌드
 
 Python 없는 PC에서도 실행 가능한 단일 exe 파일을 생성합니다.
 
@@ -39,7 +86,7 @@ pyw snap_path.pyw
 
 ### 캡쳐
 
-1. `Ctrl+Alt+S`(자동) 또는 `Ctrl+Alt+Shift+S`(이미지만) — 화면이 얼리면서 어둡게 변함
+1. `Ctrl+Alt+S`(자동) 또는 `Ctrl+Alt+Shift+S`(이미지만, Windows 만) — 화면이 얼리면서 어둡게 변함
 2. 마우스 드래그로 영역 선택 (선택 영역만 밝게 표시)
 3. 놓으면 자동 저장 + 클립보드 복사
 4. `Ctrl+V`로 붙여넣기
@@ -138,25 +185,7 @@ $lnk.Save()
 
 리눅스 버전은 `snap_path_linux.py`입니다. **X11 세션에서 동작** (Wayland는 글로벌 핫키가 OS 레벨에서 차단되어 미지원).
 
-### 설치
-
-```bash
-# 시스템 패키지 (tkinter, ImageTk, 클립보드 백엔드, 트레이)
-sudo apt install python3-tk python3-pil.imagetk xclip gir1.2-ayatanaappindicator3-0.1
-
-# Python 패키지
-pip install -r requirements-linux.txt
-```
-
-### 실행
-
-```bash
-python3 snap_path_linux.py
-```
-
-`Ctrl+Alt+S` → 화면 얼림 → 드래그로 영역 선택 → 자동 저장 + 클립보드 복사.
-
-종료는 트레이 메뉴 또는 터미널에서 `Ctrl+C`.
+설치·실행·자동 시작은 맨 위 "받는 사람용 — 리눅스".
 
 ### 클립보드 — Windows 와 방식이 다르다
 
@@ -174,10 +203,9 @@ X11 클립보드는 **소유 프로세스가 죽으면 내용이 사라진다**(
 그래서 헬퍼가 상주하며 소유를 유지하고, 다른 앱이 새로 복사해 소유권을 잃으면 스스로 종료한다.
 헬퍼가 없으면 `pyperclip` 으로 경로만 복사하는 폴백으로 떨어진다.
 
-⚠ **아직 실사용 검증 전이다.** Windows 도 같은 방식으로 돌아왔다 — 처음 실패했던 원인은
-동시 탑재 자체가 아니라 **텍스트를 먼저 등록해 우선순위가 뒤집힌 것**이었다(`6d5e516`).
-이미지를 먼저 올리도록 고쳐 다시 적용했다. 리눅스에서 같은 증상이 나면 Qt 가 MIME 을
-등록하는 순서를 먼저 확인할 것.
+Windows 도 같은 동시 탑재 방식이다 — 처음 실패했던 원인은 동시 탑재 자체가 아니라
+**텍스트를 먼저 등록해 우선순위가 뒤집힌 것**이었다(`6d5e516`). 리눅스에서 그림에 경로가 딸려 붙으면
+Qt 가 MIME 을 등록하는 순서를 먼저 확인할 것.
 
 ### 데모 GIF 녹화
 
